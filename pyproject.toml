@@ -1,0 +1,40 @@
+[project]
+name = "mcp-order-flow-server"
+version = "1.0.0"
+description = "MCP Server providing real-time order flow analysis for options trading decisions"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=0.1.0",
+    "redis>=5.0.0",
+    "numpy>=1.23.0",
+    "asyncio>=3.4.3",
+]
+authors = [
+    {name = "Sayantan", email = "sayantanbhow@gmail.com"}
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.7.0",
+    "flake8>=6.1.0",
+    "mypy>=1.5.0",
+]
+
+[project.scripts]
+mcp-order-flow-server = "src.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
