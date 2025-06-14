@@ -4,8 +4,8 @@ import logging
 from typing import Optional
 import time
 
-from ..formatters.state_manager import StateManager
-from ..config import get_storage_client
+from src.formatters.state_manager import StateManager
+from src.config import get_storage_client
 
 logger = logging.getLogger(__name__)
 

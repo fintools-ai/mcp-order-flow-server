@@ -10,7 +10,7 @@ import grpc
 from grpc import aio as grpc_aio
 
 # Import generated protobuf files
-from ..proto import orderflow_pb2, orderflow_pb2_grpc
+from src.proto import orderflow_pb2, orderflow_pb2_grpc
 
 logger = logging.getLogger(__name__)
 

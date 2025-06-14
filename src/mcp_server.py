@@ -6,6 +6,9 @@ import sys
 import logging
 from typing import Optional
 
+# Add the parent directory to the Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Configure logging
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO")),
@@ -15,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import tool implementation
-from tools.order_flow_tool import analyze_order_flow
+from src.tools.order_flow_tool import analyze_order_flow
 
 # Create MCP server instance
 mcp = FastMCP("mcp-order-flow-server")
@@ -55,25 +58,13 @@ async def analyze_order_flow_tool(
 </order_flow_data>"""
 
 
-@mcp.startup()
-async def on_startup():
-    """Called when the MCP server starts"""
-    logger.info("MCP Order Flow Server starting up")
-    logger.info(f"Data source: {os.getenv('DATA_SOURCE', 'grpc')}")
-    logger.info("Server startup complete")
-
-
-@mcp.shutdown()
-async def on_shutdown():
-    """Called when the MCP server shuts down"""
-    logger.info("MCP Order Flow Server shutting down")
-    logger.info("Server shutdown complete")
-
-
 def main():
     """Main entry point"""
+    # Log startup info
+    logger.info("MCP Order Flow Server starting up")
+    
     data_source = os.getenv('DATA_SOURCE', 'grpc')
-    logger.info(f"Starting MCP Order Flow Server with {data_source} backend")
+    logger.info(f"Data source: {data_source}")
     
     if data_source == 'grpc':
         logger.info(f"gRPC URL: {os.getenv('DATA_BROKER_GRPC_URL', 'localhost:9090')}")
@@ -81,6 +72,8 @@ def main():
         logger.info(f"HTTP URL: {os.getenv('DATA_BROKER_URL', 'http://localhost:8080')}")
     else:
         logger.info(f"Redis: {os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}")
+    
+    logger.info("Server startup complete")
     
     # Run the server
     mcp.run()
