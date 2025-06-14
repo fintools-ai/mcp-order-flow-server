@@ -5,7 +5,7 @@ from typing import Optional
 import time
 
 from ..formatters.state_manager import StateManager
-from ..storage.redis_client import OrderFlowRedisClient
+from ..config import get_storage_client
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +30,11 @@ async def analyze_order_flow(
         # Parse history string to seconds
         history_seconds = parse_time_string(history)
         
-        # Get Redis client
-        redis_client = OrderFlowRedisClient()
+        # Get storage client (Redis or Data Broker)
+        storage_client = get_storage_client()
         
         # Get state manager
-        state_manager = StateManager(ticker, redis_client)
+        state_manager = StateManager(ticker, storage_client)
         
         # Get formatted data
         logger.info(f"Analyzing order flow for {ticker} with {history_seconds}s history")
@@ -108,12 +108,12 @@ def build_error_response(ticker: str, error_message: str) -> str:
     <error_message>{error_message}</error_message>
     <possible_causes>
         <cause>No data available for this ticker</cause>
-        <cause>Redis connection issue</cause>
-        <cause>Data broker not running</cause>
+        <cause>Storage backend connection issue</cause>
+        <cause>Data broker or Redis not running</cause>
     </possible_causes>
     <suggestions>
         <suggestion>Verify the ticker symbol is correct</suggestion>
         <suggestion>Check if the data broker is running</suggestion>
-        <suggestion>Ensure Redis is accessible</suggestion>
+        <suggestion>Ensure storage backend is accessible</suggestion>
     </suggestions>
 </order_flow_data>"""

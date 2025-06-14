@@ -6,273 +6,293 @@ import logging
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
-from ..storage.redis_client import OrderFlowRedisClient
-
 logger = logging.getLogger(__name__)
 
 
 class StateManager:
-    """Manages state for order flow analysis - provides data only, no recommendations"""
+    """Manages state for order flow analysis - optimized for gRPC snapshot calls"""
     
-    def __init__(self, ticker: str, redis_client: Optional[OrderFlowRedisClient] = None):
+    def __init__(self, ticker: str, storage_client):
         """Initialize state manager"""
         self.ticker = ticker
-        self.redis_client = redis_client or OrderFlowRedisClient()
+        self.storage_client = storage_client
         
     def get_current_state(self, history_seconds: int = 600) -> Dict[str, Any]:
-        """Get current state data with specified history"""
-        # Get recent quotes for the full history period
-        quotes = self.redis_client.get_recent_quotes(self.ticker, seconds=history_seconds)
+        """Get current state data using efficient snapshot method"""
+        
+        # Use gRPC snapshot if available for maximum efficiency
+        if hasattr(self.storage_client, 'get_order_flow_snapshot'):
+            try:
+                snapshot = self.storage_client.get_order_flow_snapshot(
+                    ticker=self.ticker,
+                    quote_seconds=history_seconds,
+                    pattern_seconds=history_seconds,
+                    metric_windows=['10s', '1min', '5min'],
+                    include_levels=True
+                )
+                
+                if snapshot:
+                    return self._process_snapshot(snapshot, history_seconds)
+                    
+            except Exception as e:
+                logger.warning(f"Snapshot method failed, falling back to individual calls: {e}")
+        
+        # Fallback to individual calls for non-gRPC clients
+        return self._get_state_individual_calls(history_seconds)
+    
+    def _process_snapshot(self, snapshot: Dict[str, Any], history_seconds: int) -> Dict[str, Any]:
+        """Process gRPC snapshot data"""
+        quotes = snapshot.get('quotes', [])
         if not quotes:
             return {
                 'ticker': self.ticker,
                 'timestamp': time.time(),
                 'error': 'No recent quote data available'
             }
-            
-        # Get latest quote
-        latest_quote = self.redis_client.get_latest_quote(self.ticker) or (quotes[-1] if quotes else {})
         
-        # Get current metrics (snapshots)
-        metrics_10s = self.redis_client.get_current_metrics(self.ticker, "10s")
-        metrics_1min = self.redis_client.get_current_metrics(self.ticker, "1min")
-        metrics_5min = self.redis_client.get_current_metrics(self.ticker, "5min")
+        latest_quote = snapshot.get('latest_quote') or (quotes[-1] if quotes else {})
+        metrics = snapshot.get('metrics', {})
+        patterns = snapshot.get('patterns', [])
+        levels = snapshot.get('levels', {'bid': [], 'ask': []})
         
-        # Get significant levels
-        levels = self.redis_client.get_significant_levels(self.ticker)
-        
-        # Get patterns for the FULL history period
-        patterns = self.redis_client.get_recent_patterns(self.ticker, seconds=history_seconds)
-        
-        # Calculate current price (mid-point)
+        # Calculate current price
         current_price = 0
         if latest_quote:
             bid = latest_quote.get('bid_price', 0)
             ask = latest_quote.get('ask_price', 0)
-            if bid > 0 and ask > 0:
+            if bid and ask:
                 current_price = (bid + ask) / 2
-                
-        # Build state
+        
+        # Build comprehensive state
         state = {
             'ticker': self.ticker,
             'timestamp': time.time(),
             'current_price': current_price,
             'latest_quote': latest_quote,
-            'metrics_10s': metrics_10s,
-            'metrics_1min': metrics_1min,
-            'metrics_5min': metrics_5min,
-            'significant_levels': levels,
-            'recent_patterns': patterns,
             'quote_count': len(quotes),
-            'history_seconds': history_seconds
+            'history_seconds': history_seconds,
+            'metrics': {
+                '10s': metrics.get('10s', {}),
+                '1min': metrics.get('1min', {}),
+                '5min': metrics.get('5min', {})
+            },
+            'significant_levels': levels,
+            'patterns': patterns
         }
         
         return state
+    
+    def _get_state_individual_calls(self, history_seconds: int) -> Dict[str, Any]:
+        """Fallback method using individual storage calls"""
+        try:
+            # Get recent quotes
+            quotes = self.storage_client.get_recent_quotes(self.ticker, seconds=history_seconds)
+            if not quotes:
+                return {
+                    'ticker': self.ticker,
+                    'timestamp': time.time(),
+                    'error': 'No recent quote data available'
+                }
+                
+            # Get latest quote
+            latest_quote = self.storage_client.get_latest_quote(self.ticker) or (quotes[-1] if quotes else {})
+            
+            # Get current metrics
+            metrics_10s = self.storage_client.get_current_metrics(self.ticker, "10s")
+            metrics_1min = self.storage_client.get_current_metrics(self.ticker, "1min")
+            metrics_5min = self.storage_client.get_current_metrics(self.ticker, "5min")
+            
+            # Get significant levels
+            levels = self.storage_client.get_significant_levels(self.ticker)
+            
+            # Get patterns
+            patterns = self.storage_client.get_recent_patterns(self.ticker, seconds=history_seconds)
+            
+            # Calculate current price
+            current_price = 0
+            if latest_quote:
+                bid = latest_quote.get('bid_price', 0)
+                ask = latest_quote.get('ask_price', 0)
+                if bid and ask:
+                    current_price = (bid + ask) / 2
+            
+            # Build state
+            state = {
+                'ticker': self.ticker,
+                'timestamp': time.time(),
+                'current_price': current_price,
+                'latest_quote': latest_quote,
+                'quote_count': len(quotes),
+                'history_seconds': history_seconds,
+                'metrics': {
+                    '10s': metrics_10s,
+                    '1min': metrics_1min,
+                    '5min': metrics_5min
+                },
+                'significant_levels': levels,
+                'patterns': patterns
+            }
+            
+            return state
+            
+        except Exception as e:
+            logger.exception(f"Error getting state for {self.ticker}: {e}")
+            return {
+                'ticker': self.ticker,
+                'timestamp': time.time(),
+                'error': f'Failed to retrieve data: {str(e)}'
+            }
+    
+    def get_mcp_formatted_data(self, history_seconds: int = 300, include_patterns: bool = True) -> str:
+        """Get MCP-formatted XML response for order flow analysis"""
         
-    def get_mcp_formatted_data(self, history_seconds: int = 600, include_patterns: bool = True) -> str:
-        """Get MCP-formatted data - pure data only, no recommendations"""
-        # Get current state with specified history
+        # Get current state using efficient method
         state = self.get_current_state(history_seconds)
         
+        # Handle errors
         if 'error' in state:
-            return self._format_error_response(state['error'])
-            
-        # Format data-only response
-        return self._format_data_only_mcp(state, include_patterns)
+            return self._build_error_response(state['error'])
         
-    def _format_data_only_mcp(self, state: Dict[str, Any], include_patterns: bool = True) -> str:
-        """Format pure data for LLM to analyze"""
-        timestamp = datetime.fromtimestamp(state['timestamp']).isoformat()
-        latest_quote = state.get('latest_quote', {})
-        metrics_10s = state.get('metrics_10s', {})
-        metrics_1min = state.get('metrics_1min', {})
-        metrics_5min = state.get('metrics_5min', {})
-        levels = state.get('significant_levels', {})
+        # Build MCP XML response
+        return self._build_mcp_response(state, include_patterns)
+    
+    def _build_mcp_response(self, state: Dict[str, Any], include_patterns: bool) -> str:
+        """Build MCP XML response from state data"""
+        ticker = state['ticker']
+        timestamp = datetime.fromtimestamp(state['timestamp']).strftime('%Y-%m-%dT%H:%M:%S')
         current_price = state.get('current_price', 0)
-        history_seconds = state.get('history_seconds', 600)
+        latest_quote = state.get('latest_quote', {})
         
-        # Calculate basic metrics
-        bid_size = int(latest_quote.get('bid_size', 0))
-        ask_size = int(latest_quote.get('ask_size', 0))
-        bid_ask_ratio = round(bid_size / ask_size, 2) if ask_size > 0 else 0
+        # Start XML response
+        xml_parts = [
+            f'<order_flow_data ticker="{ticker}" timestamp="{timestamp}" current_price="{current_price:.2f}">',
+            f'    <data_summary>',
+            f'        <quote_count>{state.get("quote_count", 0)}</quote_count>',
+            f'        <history_window>{state.get("history_seconds", 0)}s</history_window>',
+            f'        <pattern_count>{len(state.get("patterns", []))}</pattern_count>',
+            f'    </data_summary>'
+        ]
         
-        # Calculate spread
-        bid_price = float(latest_quote.get('bid_price', 0))
-        ask_price = float(latest_quote.get('ask_price', 0))
-        spread = ask_price - bid_price if bid_price > 0 and ask_price > 0 else 0
-        spread_bps = (spread / current_price * 10000) if current_price > 0 else 0
+        # Add current quote information
+        if latest_quote:
+            xml_parts.extend([
+                f'    <current_quote>',
+                f'        <bid_price>{latest_quote.get("bid_price", 0):.3f}</bid_price>',
+                f'        <ask_price>{latest_quote.get("ask_price", 0):.3f}</ask_price>',
+                f'        <bid_size>{latest_quote.get("bid_size", 0)}</bid_size>',
+                f'        <ask_size>{latest_quote.get("ask_size", 0)}</ask_size>',
+                f'        <spread>{latest_quote.get("spread", 0):.3f}</spread>',
+                f'    </current_quote>'
+            ])
         
-        # Start building MCP response
-        mcp = f'<order_flow_data ticker="{self.ticker}" timestamp="{timestamp}" current_price="{current_price:.2f}" history_window="{history_seconds}s">\n'
+        # Add metrics for different time windows
+        metrics = state.get('metrics', {})
+        for window, window_metrics in metrics.items():
+            if window_metrics:
+                xml_parts.extend([
+                    f'    <metrics window="{window}">',
+                    self._format_metrics_xml(window_metrics),
+                    f'    </metrics>'
+                ])
         
-        # Current Quote
-        mcp += f'  <current_quote>\n'
-        mcp += f'    <bid price="{bid_price:.2f}" size="{bid_size}" />\n'
-        mcp += f'    <ask price="{ask_price:.2f}" size="{ask_size}" />\n'
-        mcp += f'    <bid_ask_ratio>{bid_ask_ratio}</bid_ask_ratio>\n'
-        mcp += f'    <spread value="{spread:.4f}" basis_points="{spread_bps:.1f}" />\n'
-        mcp += f'  </current_quote>\n'
-        
-        # Momentum Data
-        mcp += f'  <momentum>\n'
-        mcp += f'    <last_10s>\n'
-        mcp += f'      <bid_price_change>{metrics_10s.get("bid_price_movement", 0):.4f}</bid_price_change>\n'
-        mcp += f'      <ask_price_change>{metrics_10s.get("ask_price_movement", 0):.4f}</ask_price_change>\n'
-        mcp += f'      <bid_size_change>{metrics_10s.get("net_bid_size_change", 0)}</bid_size_change>\n'
-        mcp += f'      <ask_size_change>{metrics_10s.get("net_ask_size_change", 0)}</ask_size_change>\n'
-        mcp += f'    </last_10s>\n'
-        mcp += f'    <last_60s>\n'
-        mcp += f'      <bid_price_change>{metrics_1min.get("bid_price_movement", 0):.4f}</bid_price_change>\n'
-        mcp += f'      <ask_price_change>{metrics_1min.get("ask_price_movement", 0):.4f}</ask_price_change>\n'
-        mcp += f'      <bid_lifts>{metrics_1min.get("bid_lift_count", 0)}</bid_lifts>\n'
-        mcp += f'      <bid_drops>{metrics_1min.get("bid_drop_count", 0)}</bid_drops>\n'
-        mcp += f'      <ask_lifts>{metrics_1min.get("ask_lift_count", 0)}</ask_lifts>\n'
-        mcp += f'      <ask_drops>{metrics_1min.get("ask_drop_count", 0)}</ask_drops>\n'
-        mcp += f'    </last_60s>\n'
-        
-        # Add 5min metrics if available
-        if metrics_5min:
-            mcp += f'    <last_5min>\n'
-            mcp += f'      <bid_price_change>{metrics_5min.get("bid_price_movement", 0):.4f}</bid_price_change>\n'
-            mcp += f'      <ask_price_change>{metrics_5min.get("ask_price_movement", 0):.4f}</ask_price_change>\n'
-            mcp += f'      <bid_lifts>{metrics_5min.get("bid_lift_count", 0)}</bid_lifts>\n'
-            mcp += f'      <bid_drops>{metrics_5min.get("bid_drop_count", 0)}</bid_drops>\n'
-            mcp += f'    </last_5min>\n'
+        # Add significant levels
+        levels = state.get('significant_levels', {'bid': [], 'ask': []})
+        if levels['bid'] or levels['ask']:
+            xml_parts.append('    <significant_levels>')
             
-        mcp += f'  </momentum>\n'
+            # Bid levels
+            if levels['bid']:
+                xml_parts.append('        <bid_levels>')
+                for level in levels['bid'][:5]:  # Top 5 levels
+                    xml_parts.append(
+                        f'            <level price="{level.get("price", 0):.2f}" '
+                        f'appearances="{level.get("appearances", 0)}" '
+                        f'total_size="{level.get("total_size", 0)}" />'
+                    )
+                xml_parts.append('        </bid_levels>')
+            
+            # Ask levels
+            if levels['ask']:
+                xml_parts.append('        <ask_levels>')
+                for level in levels['ask'][:5]:  # Top 5 levels
+                    xml_parts.append(
+                        f'            <level price="{level.get("price", 0):.2f}" '
+                        f'appearances="{level.get("appearances", 0)}" '
+                        f'total_size="{level.get("total_size", 0)}" />'
+                    )
+                xml_parts.append('        </ask_levels>')
+            
+            xml_parts.append('    </significant_levels>')
         
-        # Size Metrics
-        mcp += f'  <size_metrics>\n'
-        mcp += f'    <large_orders>\n'
-        mcp += f'      <bids_over_10k>{metrics_1min.get("large_bids_appeared", 0)}</bids_over_10k>\n'
-        mcp += f'      <asks_over_10k>{metrics_1min.get("large_asks_appeared", 0)}</asks_over_10k>\n'
-        mcp += f'    </large_orders>\n'
-        mcp += f'    <average_sizes>\n'
-        mcp += f'      <bid_avg>{metrics_1min.get("avg_bid_size", 0)}</bid_avg>\n'
-        mcp += f'      <ask_avg>{metrics_1min.get("avg_ask_size", 0)}</ask_avg>\n'
-        mcp += f'    </average_sizes>\n'
-        mcp += f'    <acceleration>\n'
-        mcp += f'      <bid>{metrics_1min.get("bid_size_acceleration", "STABLE")}</bid>\n'
-        mcp += f'      <ask>{metrics_1min.get("ask_size_acceleration", "STABLE")}</ask>\n'
-        mcp += f'    </acceleration>\n'
-        mcp += f'  </size_metrics>\n'
-        
-        # Market Behaviors
-        behaviors = metrics_10s.get('behaviors', {})
-        mcp += f'  <behaviors>\n'
-        mcp += f'    <bid_stacking>{behaviors.get("bid_stacking", "NO")}</bid_stacking>\n'
-        mcp += f'    <ask_pulling>{behaviors.get("ask_pulling", "NO")}</ask_pulling>\n'
-        mcp += f'    <spread_tightening>{behaviors.get("spread_tightening", "NO")}</spread_tightening>\n'
-        mcp += f'    <momentum_building>{behaviors.get("momentum_building", "NO")}</momentum_building>\n'
-        mcp += f'  </behaviors>\n'
-        
-        # Price Levels
-        mcp += f'  <price_levels>\n'
-        
-        # Find nearest support and resistance
-        if levels.get('bid'):
-            for level in levels['bid'][:3]:  # Top 3 bid levels
-                if level.get('price', 0) < current_price:
-                    distance = ((current_price - level['price']) / current_price) * 100 if current_price > 0 else 0
-                    mcp += f'    <bid_level price="{level["price"]:.2f}" size="{level.get("total_size", 0)}" appearances="{level.get("appearances", 0)}" distance_pct="{distance:.2f}" />\n'
-                    
-        if levels.get('ask'):
-            for level in levels['ask'][:3]:  # Top 3 ask levels
-                if level.get('price', 0) > current_price:
-                    distance = ((level['price'] - current_price) / current_price) * 100 if current_price > 0 else 0
-                    mcp += f'    <ask_level price="{level["price"]:.2f}" size="{level.get("total_size", 0)}" appearances="{level.get("appearances", 0)}" distance_pct="{distance:.2f}" />\n'
-                    
-        # Add recent sweep if any
-        last_sweep = metrics_1min.get('last_sweep')
-        if last_sweep and isinstance(last_sweep, dict):
-            timestamp = last_sweep.get('timestamp', 0)
-            # Convert to seconds if timestamp is in milliseconds
-            if timestamp > 1e10:  # Likely milliseconds
-                seconds_ago = int(time.time() - timestamp / 1000)
-            else:
-                seconds_ago = int(time.time() - timestamp)
-                
-            if seconds_ago < 300:  # Only show sweeps from last 5 minutes
-                mcp += f'    <sweep price="{last_sweep.get("price", 0):.2f}" size="{last_sweep.get("size", 0)}" direction="{last_sweep.get("direction", "")}" seconds_ago="{seconds_ago}" />\n'
-                
-        mcp += f'  </price_levels>\n'
-        
-        # Flow Velocity
-        mcp += f'  <velocity>\n'
-        mcp += f'    <quotes_per_second>{round(state.get("quote_count", 0) / max(history_seconds, 1), 1)}</quotes_per_second>\n'
-        
-        price_velocity = abs(metrics_1min.get('bid_price_movement', 0)) / 60 if metrics_1min.get('bid_price_movement') else 0
-        mcp += f'    <price_velocity>{price_velocity:.6f}</price_velocity>\n'
-        
-        size_turnover = (abs(metrics_1min.get('net_bid_size_change', 0)) + abs(metrics_1min.get('net_ask_size_change', 0))) / 60
-        mcp += f'    <size_turnover>{round(size_turnover)}</size_turnover>\n'
-        mcp += f'  </velocity>\n'
-        
-        # Recent Patterns (if requested)
+        # Add patterns if requested
         if include_patterns:
-            patterns = state.get('recent_patterns', [])
+            patterns = state.get('patterns', [])
             if patterns:
-                mcp += f'  <detected_patterns count="{len(patterns)}" window="{history_seconds}s">\n'
-                
-                # Show last 10 patterns or all if less
-                display_patterns = patterns[-10:] if len(patterns) > 10 else patterns
-                
-                for pattern in display_patterns:
-                    if not isinstance(pattern, dict):
-                        continue
-                        
-                    timestamp = pattern.get('timestamp', 0)
-                    # Convert to seconds properly
-                    if timestamp > 1e10:  # Likely milliseconds
-                        seconds_ago = int(time.time() - timestamp / 1000)
-                    else:
-                        seconds_ago = int(time.time() - timestamp)
-                        
-                    if seconds_ago > history_seconds:
-                        continue  # Skip patterns outside our window
-                        
-                    mcp += f'    <pattern>\n'
-                    mcp += f'      <type>{pattern.get("type", "unknown")}</type>\n'
-                    
-                    # Add pattern-specific details
-                    if pattern.get('type') == 'absorption':
-                        mcp += f'      <side>{pattern.get("side", "")}</side>\n'
-                        mcp += f'      <strength>{pattern.get("strength", "")}</strength>\n'
-                        mcp += f'      <price_level>{pattern.get("price_level", 0):.2f}</price_level>\n'
-                        mcp += f'      <volume>{pattern.get("volume", 0)}</volume>\n'
-                        
-                    elif pattern.get('type') == 'stacking':
-                        mcp += f'      <side>{pattern.get("side", "")}</side>\n'
-                        mcp += f'      <levels>{pattern.get("levels", 0)}</levels>\n'
-                        mcp += f'      <total_size>{pattern.get("total_size", 0)}</total_size>\n'
-                        
-                    elif pattern.get('type') == 'sweep':
-                        mcp += f'      <direction>{pattern.get("direction", "")}</direction>\n'
-                        mcp += f'      <price>{pattern.get("price", 0):.2f}</price>\n'
-                        mcp += f'      <size>{pattern.get("size", 0)}</size>\n'
-                        
-                    elif pattern.get('type') == 'momentum_shift':
-                        mcp += f'      <direction>{pattern.get("direction", "")}</direction>\n'
-                        mcp += f'      <strength>{pattern.get("strength", "")}</strength>\n'
-                        
-                    # Common fields
-                    if pattern.get('description'):
-                        mcp += f'      <description>{pattern.get("description", "")}</description>\n'
-                    mcp += f'      <detected_seconds_ago>{seconds_ago}</detected_seconds_ago>\n'
-                    mcp += f'    </pattern>\n'
-                    
-                mcp += f'  </detected_patterns>\n'
-                
-        mcp += f'</order_flow_data>'
+                xml_parts.append('    <detected_patterns>')
+                for pattern in patterns[-10:]:  # Last 10 patterns
+                    xml_parts.extend([
+                        f'        <pattern type="{pattern.get("type", "unknown")}">',
+                        f'            <subtype>{pattern.get("subtype", "")}</subtype>',
+                        f'            <strength>{pattern.get("strength", "")}</strength>',
+                        f'            <description>{pattern.get("description", "")}</description>',
+                        f'        </pattern>'
+                    ])
+                xml_parts.append('    </detected_patterns>')
         
-        return mcp
+        xml_parts.append('</order_flow_data>')
         
-    def _format_error_response(self, error_message: str) -> str:
-        """Format error response"""
-        timestamp = datetime.now().isoformat()
+        return '\n'.join(xml_parts)
+    
+    def _format_metrics_xml(self, metrics: Dict[str, Any]) -> str:
+        """Format metrics as XML"""
+        xml_parts = []
         
-        mcp = f'<order_flow_data ticker="{self.ticker}" timestamp="{timestamp}" error="true">\n'
-        mcp += f'  <error_message>{error_message}</error_message>\n'
-        mcp += f'</order_flow_data>'
+        # Momentum metrics
+        if any(k in metrics for k in ['bid_price_movement', 'ask_price_movement']):
+            xml_parts.extend([
+                '        <momentum>',
+                f'            <bid_movement>{metrics.get("bid_price_movement", 0):.3f}</bid_movement>',
+                f'            <ask_movement>{metrics.get("ask_price_movement", 0):.3f}</ask_movement>',
+                f'            <bid_lifts>{metrics.get("bid_lift_count", 0)}</bid_lifts>',
+                f'            <ask_lifts>{metrics.get("ask_lift_count", 0)}</ask_lifts>',
+                '        </momentum>'
+            ])
         
-        return mcp
+        # Size dynamics
+        if any(k in metrics for k in ['avg_bid_size', 'avg_ask_size']):
+            xml_parts.extend([
+                '        <size_dynamics>',
+                f'            <avg_bid_size>{metrics.get("avg_bid_size", 0)}</avg_bid_size>',
+                f'            <avg_ask_size>{metrics.get("avg_ask_size", 0)}</avg_ask_size>',
+                f'            <large_bids>{metrics.get("large_bids_appeared", 0)}</large_bids>',
+                f'            <large_asks>{metrics.get("large_asks_appeared", 0)}</large_asks>',
+                '        </size_dynamics>'
+            ])
+        
+        # Behaviors
+        behaviors = metrics.get('behaviors', {})
+        if behaviors:
+            xml_parts.append('        <behaviors>')
+            for behavior, value in behaviors.items():
+                xml_parts.append(f'            <{behavior}>{value}</{behavior}>')
+            xml_parts.append('        </behaviors>')
+        
+        return '\n'.join(xml_parts)
+    
+    def _build_error_response(self, error_message: str) -> str:
+        """Build error response XML"""
+        timestamp = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+        
+        return f"""<order_flow_data ticker="{self.ticker}" timestamp="{timestamp}" error="true">
+    <error_message>{error_message}</error_message>
+    <possible_causes>
+        <cause>No data available for this ticker</cause>
+        <cause>Data broker connection issue</cause>
+        <cause>Storage backend not accessible</cause>
+    </possible_causes>
+    <suggestions>
+        <suggestion>Verify the ticker symbol is correct</suggestion>
+        <suggestion>Check if the data broker is running</suggestion>
+        <suggestion>Ensure storage backend is accessible</suggestion>
+    </suggestions>
+</order_flow_data>"""

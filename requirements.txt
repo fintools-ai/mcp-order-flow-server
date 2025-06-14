@@ -1,3 +1,10 @@
+# Core MCP framework
 fastmcp>=0.1.0
+
+# Data clients
 redis>=5.0.0
-numpy>=1.23.0
+grpcio>=1.59.0
+grpcio-tools>=1.59.0
+
+# Utilities
+python-dotenv>=1.0.0

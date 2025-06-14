@@ -38,3 +38,7 @@ dmypy.json
 # Local development
 *.local
 .env
+
+# Generated protobuf files (regenerate with: python -m grpc_tools.protoc ...)
+src/proto/orderflow_pb2.py
+src/proto/orderflow_pb2_grpc.py

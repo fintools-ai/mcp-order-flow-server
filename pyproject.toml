@@ -6,8 +6,9 @@ requires-python = ">=3.10"
 dependencies = [
     "fastmcp>=0.1.0",
     "redis>=5.0.0",
-    "numpy>=1.23.0",
-    "asyncio>=3.4.3",
+    "grpcio>=1.59.0",
+    "grpcio-tools>=1.59.0",
+    "python-dotenv>=1.0.0",
 ]
 authors = [
     {name = "Sayantan", email = "sayantanbhow@gmail.com"}
