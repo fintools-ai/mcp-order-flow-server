@@ -55,13 +55,20 @@ class StateManager:
         patterns = snapshot.get('patterns', [])
         levels = snapshot.get('levels', {'bid': [], 'ask': []})
         
-        # Calculate current price
+        # Calculate current price with proper validation
         current_price = 0
         if latest_quote:
             bid = latest_quote.get('bid_price', 0)
             ask = latest_quote.get('ask_price', 0)
-            if bid and ask:
+            
+            # Validate bid < ask relationship
+            if bid and ask and bid < ask:
                 current_price = (bid + ask) / 2
+            elif bid and not ask:
+                current_price = bid  # Use bid if ask is missing
+            elif ask and not bid:
+                current_price = ask  # Use ask if bid is missing
+            # If bid >= ask or both are invalid, current_price remains 0
         
         # Build comprehensive state
         state = {

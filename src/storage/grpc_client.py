@@ -42,9 +42,6 @@ class GRPCDataBrokerClient:
             ('grpc.max_receive_message_length', max_message_size),
             ('grpc.max_send_message_length', max_message_size),
             ('grpc.max_concurrent_streams', 1000),
-            # Enable compression
-            ('grpc.default_compression_algorithm', grpc.Compression.Gzip),
-            ('grpc.default_compression_level', grpc.CompressionLevel.Medium),
         ]
         
         logger.info(f"GRPCDataBrokerClient initialized for {self.server_url}")
@@ -434,10 +431,10 @@ class OrderFlowRedisClient(GRPCDataBrokerClient):
         """Run async coroutine in sync context"""
         try:
             if self.loop.is_running():
-                # If loop is already running, we can't use run_until_complete
-                # This is a limitation - in a real async environment, this should be avoided
-                logger.warning("Event loop already running - async operation may not complete properly")
-                return asyncio.create_task(coro)
+                # If loop is already running, use nest_asyncio to handle this
+                import nest_asyncio
+                nest_asyncio.apply()
+                return self.loop.run_until_complete(coro)
             else:
                 return self.loop.run_until_complete(coro)
         except Exception as e:
@@ -461,6 +458,17 @@ class OrderFlowRedisClient(GRPCDataBrokerClient):
     
     def get_recent_patterns(self, ticker: str, seconds: int = 300) -> List[Dict[str, Any]]:
         return self._run_async(super().get_recent_patterns(ticker, seconds))
+    
+    def get_order_flow_snapshot(
+        self, 
+        ticker: str, 
+        quote_seconds: int = 300,
+        pattern_seconds: int = 300,
+        metric_windows: List[str] = None,
+        include_levels: bool = True
+    ) -> Dict[str, Any]:
+        return self._run_async(super().get_order_flow_snapshot(
+            ticker, quote_seconds, pattern_seconds, metric_windows, include_levels))
     
     def ping(self) -> bool:
         return self._run_async(super().ping())
